@@ -36,12 +36,17 @@ COPY pipeline/queries.py /opt/program/pipeline/queries.py
 ENV PYTHONPATH=/app/src:/opt/program:/opt/program/pipeline PYTHONUNBUFFERED=1
 WORKDIR /opt/program
 
-# `serve` and `train` as real programs on PATH, not only arguments of the ENTRYPOINT below. Real-time endpoints and training jobs
-# run `docker run <image> serve|train` (the argument reaches our entrypoint), but a SERVERLESS endpoint failed twice with no
-# log at all ("Request to service failed", 20 Oct 2026) while the same image served fine locally, read-only, as non-root, and on
-# a real-time endpoint: serverless may start `serve` itself. With these two scripts both ways work. o+rX: serverless may run the
-# container as another user, and every file our code and the app's code read must be readable by that user.
-RUN printf '#!/bin/sh\nexec python -m finrisk_jobs serve "$@"\n' > /usr/local/bin/serve \
+# NO LAMBDA EXTENSION in the model image. The app's release image carries the Lambda Web Adapter at /opt/extensions (the app
+# itself needs it on its own Lambda in dev and sit). A SERVERLESS endpoint runs on Lambda's machinery too, and Lambda loads every
+# file in /opt/extensions before the container starts: the adapter took over and every serverless endpoint failed after ~5
+# minutes with only "Request to service failed" and no log at all, while the SAME image and model went InService on a
+# real-time endpoint (live rehearsal, 20-21 Oct 2026). The same image without /opt/extensions went InService on serverless and
+# answered in 1.0 s. The model image does not need the adapter: SageMaker talks to our server on port 8080 itself.
+#
+# Also: `serve` and `train` as real programs on PATH (either start form works: `docker run <image> serve` reaches our
+# ENTRYPOINT, a runtime that starts `serve` itself finds the program), and every file readable by any user (o+rX).
+RUN rm -rf /opt/extensions \
+ && printf '#!/bin/sh\nexec python -m finrisk_jobs serve "$@"\n' > /usr/local/bin/serve \
  && printf '#!/bin/sh\nexec python -m finrisk_jobs train "$@"\n' > /usr/local/bin/train \
  && chmod 755 /usr/local/bin/serve /usr/local/bin/train \
  && chmod -R o+rX /opt/program /app
