@@ -144,7 +144,12 @@ class Traced:
             if operation not in self._quiet or operation not in self._seen:
                 self._out(mask(f"  AWS  {self._service}.{operation}"))
                 for key, value in params.items():
-                    text = value if isinstance(value, str) else json.dumps(value, separators=(",", ":"), default=str)
+                    if isinstance(value, (bytes, bytearray)):
+                        text = f"<{len(value):,} bytes>"                      # never print a Parquet file into a log
+                    elif hasattr(value, "read"):
+                        text = "<a file>"
+                    else:
+                        text = value if isinstance(value, str) else json.dumps(value, separators=(",", ":"), default=str)
                     text = text if len(text) <= 240 else text[:237] + "..."
                     self._out(mask(f"         {key:<26} {text}"))
             self._seen.add(operation)
@@ -766,7 +771,7 @@ def cmd_monitor(ctx: Context, a: argparse.Namespace) -> str | None:
     lines = monitor_table(metrics)
     for line in lines:
         ctx.out(line)
-    alarms = ctx.cw.describe_alarms(AlarmNamePrefix=f"finrisk-{a.env}-model-").get("MetricAlarms", [])
+    alarms = ctx.cw.describe_alarms(AlarmNames=model_alarm_names(a.env)).get("MetricAlarms", [])
     alarm_lines = [f"  {alarm['AlarmName']:<36} {alarm['StateValue']}" for alarm in sorted(alarms, key=lambda x: x["AlarmName"])] or \
         [f"  (no alarms named finrisk-{a.env}-model-*: finrisk-infra creates them in prod only)"]
     ctx.out("alarms:")
@@ -774,6 +779,15 @@ def cmd_monitor(ctx: Context, a: argparse.Namespace) -> str | None:
         ctx.out(line)
     write_summary(a.summary, ["### Monitor", "", "```", *lines, "```", "", "Alarms", "", "```", *alarm_lines, "```"])
     return run_id
+
+
+def model_alarm_names(env: str) -> list[str]:
+    """finrisk-<env>-model-drift / -prior-shift / -quality, from config/monitor.yaml. Exact names, never a prefix: IAM evaluates a
+    prefix search on alarm:* and the least-privilege role is refused (found in the live rehearsal)."""
+    import yaml
+
+    cfg = yaml.safe_load((REPO_ROOT / "config" / "monitor.yaml").read_text())["alarms"]
+    return [cfg["name_template"].format(env=env, kind=kind) for kind in cfg["kinds"]]
 
 
 def monitor_table(summary: dict) -> list[str]:

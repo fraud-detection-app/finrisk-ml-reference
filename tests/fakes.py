@@ -471,6 +471,8 @@ class FakeCloudWatch:
         check_shape("cloudwatch", "DescribeAlarms", kw)
         names = kw.get("AlarmNames")
         prefix = kw.get("AlarmNamePrefix", "")
+        if prefix:    # IAM evaluates a prefix search on alarm:* -- the least-privilege role finrisk-ml-train is refused (live rehearsal)
+            raise client_error("AccessDenied", "DescribeAlarms", "not authorized to perform: cloudwatch:DescribeAlarms on the resource alarm:*")
         rows = [{"AlarmName": n, "StateValue": s} for n, s in self.alarms.items() if (n in names if names else n.startswith(prefix))]
         return {"MetricAlarms": rows}
 

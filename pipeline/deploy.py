@@ -3,10 +3,15 @@
     dev, sit          SERVERLESS endpoint (3072 MB = a new account's limit, scales to zero, no Data Capture: serverless does not support it).
                       Replaced in place (UpdateEndpoint).
     pre-prod, prod    REAL-TIME endpoint (ml.t2.medium x1) with Data Capture (100 %, input and output, JSON) and a BLUE/GREEN
-                      update: a new fleet comes up next to the old one, 50 % of traffic goes to it for 120 s (the canary),
-                      two CloudWatch alarms watch it (finrisk-<env>-endpoint-5xx and -latency) and roll back by themselves
-                      if either goes off, then the rest of the traffic moves and the old fleet is kept 120 s for a quick
-                      rollback. The very first deploy is a create: there is nothing to roll back to.
+                      update: a new fleet comes up next to the old one, two CloudWatch alarms watch it
+                      (finrisk-<env>-endpoint-5xx and -latency) and roll back by themselves if either goes off, and the old
+                      fleet is kept 120 s after the switch for a quick rollback. HOW the traffic moves depends on the instance
+                      count of the variant (AWS: "Cannot create/update endpoint with single instance of variant AllTraffic, when
+                      using CANARY traffic shifting type"; a canary needs a second instance to hold the first slice):
+                        1 instance  ALL_AT_ONCE: all traffic moves to the new fleet, then it is WATCHED for `bake_seconds` (120)
+                                    by the alarms before the old fleet goes. This is what we run (one ml.t2.medium).
+                        2+ instances CANARY: 50 % of the capacity first, `canary_wait_seconds` (120) watched, then the rest.
+                      The very first deploy is a create: there is nothing to roll back to.
 
 `deploy()` does, in order (each AWS call is printed first, by the Traced clients in mlops.py):
 
@@ -85,15 +90,30 @@ def endpoint_config_request(env: str, name: str, ml_bucket: str, ecfg: dict) -> 
     return request
 
 
+def routing_strategy(ecfg: dict) -> tuple[dict, str]:
+    """(TrafficRoutingConfiguration, the sentence that says which and why), chosen by the variant's instance count.
+
+    botocore: Type and WaitIntervalInSeconds are required; CanarySize belongs to CANARY only (so ALL_AT_ONCE carries none).
+    For ALL_AT_ONCE the wait is the BAKE: SageMaker shifts all traffic, then watches the rollback alarms this long before it
+    terminates the old fleet."""
+    bg, count = ecfg["blue_green"], int(ecfg["realtime"]["instance_count"])
+    if count <= 1:
+        bake = int(bg["bake_seconds"])
+        return ({"Type": "ALL_AT_ONCE", "WaitIntervalInSeconds": bake},
+                f"blue/green ALL_AT_ONCE (1 instance: CANARY needs 2+), bake {bake} s")
+    wait, percent = int(bg["canary_wait_seconds"]), int(bg["canary_percent"])
+    return ({"Type": "CANARY", "WaitIntervalInSeconds": wait, "CanarySize": {"Type": "CAPACITY_PERCENT", "Value": percent}},
+            f"blue/green CANARY ({count} instances): {percent} % for {wait} s, then the rest")
+
+
 def deployment_config(env: str, ecfg: dict) -> dict | None:
-    """Blue/green with a canary and automatic rollback, for pre-prod and prod only."""
+    """Blue/green with automatic rollback, for pre-prod and prod only (see routing_strategy for how traffic moves)."""
     if env not in GUARDED:
         return None
     bg = ecfg["blue_green"]
     return {
         "BlueGreenUpdatePolicy": {
-            "TrafficRoutingConfiguration": {"Type": "CANARY", "WaitIntervalInSeconds": int(bg["canary_wait_seconds"]),
-                                            "CanarySize": {"Type": "CAPACITY_PERCENT", "Value": int(bg["canary_percent"])}},
+            "TrafficRoutingConfiguration": routing_strategy(ecfg)[0],
             "TerminationWaitInSeconds": int(bg["termination_wait_seconds"]),
             "MaximumExecutionTimeoutInSeconds": int(bg["max_execution_seconds"]),
         },
@@ -341,7 +361,7 @@ def deploy(ctx, env: str, version: int, detail: dict, package_arn: str, status: 
                                Tags=[{"Key": "Project", "Value": "finrisk"}, {"Key": "Env", "Value": env}])
     else:
         ctx.out(f"  {endpoint_name(env)} exists ({existing['EndpointStatus']}, config {old_config}): UPDATE"
-                + (" with blue/green: canary then all, auto-rollback on the alarms" if guarded_update else " in place"))
+                + (f" with {routing_strategy(ecfg)[1]}, auto-rollback on {' and '.join(alarm_names(env))}" if guarded_update else " in place"))
         params: dict[str, Any] = {"EndpointName": endpoint_name(env), "EndpointConfigName": name}
         dc = deployment_config(env, ecfg)
         if dc:

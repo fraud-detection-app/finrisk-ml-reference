@@ -425,3 +425,33 @@ def test_then_train_with_several_instances_starts_the_training_once(world):
 def test_then_train_with_no_wait_explains_why_it_cannot(world):
     code, out, err = world.run("backfill", "--image", IMAGE, "--then-train", "--no-wait")
     assert code == 0 and "needs the jobs to finish first" in out and not world.sm.called("start_pipeline_execution")
+
+
+# ---------------------------------------------------------------- the live rehearsal's two small findings
+
+
+def test_the_monitor_asks_for_the_alarms_by_exact_name_not_by_prefix(world):
+    """Least privilege: DescribeAlarms by prefix is evaluated on alarm:* and finrisk-ml-train is refused. The fake refuses it too."""
+    world.sm.script_execution(monitor=True)
+    world.cw.alarms.update({"finrisk-prod-model-drift": "ALARM", "finrisk-prod-model-prior-shift": "OK", "finrisk-prod-model-quality": "OK"})
+    code, out, err = world.run("monitor", "--env", "prod")
+    assert code == 0, err and "finrisk-prod-model-drift" in out and "ALARM" in out
+    assert "AlarmNames" in out and "AlarmNamePrefix" not in out
+    assert mlops.model_alarm_names("prod") == ["finrisk-prod-model-drift", "finrisk-prod-model-prior-shift", "finrisk-prod-model-quality"]
+    assert mlops.model_alarm_names("pre-prod")[0] == "finrisk-pre-prod-model-drift"
+
+
+def test_a_prefix_search_really_is_refused_by_the_fake(world):
+    from botocore.exceptions import ClientError
+
+    with pytest.raises(ClientError, match="AccessDenied"):
+        world.cw.describe_alarms(AlarmNamePrefix="finrisk-prod-model-")
+
+
+def test_binary_bodies_are_printed_as_a_byte_count_not_as_bytes(world):
+    printed = []
+    traced = mlops.Traced(world.s3, "s3", printed.append)
+    traced.put_object(Bucket=BUCKET, Key="labels/x.parquet", Body=b"PAR1\x00\x01binary" * 1000)
+    traced.put_object(Bucket=BUCKET, Key="a.json", Body="text body")
+    text = "\n".join(printed)
+    assert "<12,000 bytes>" in text and "PAR1" not in text and "text body" in text

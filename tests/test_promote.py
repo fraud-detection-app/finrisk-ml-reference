@@ -199,11 +199,12 @@ def test_a_second_deploy_to_pre_prod_or_prod_is_a_blue_green_update_with_rollbac
     (update,) = world.sm.called("update_endpoint")
     assert update["EndpointName"] == f"finrisk-{env}-fraud" and update["EndpointConfigName"] != old
     assert update["DeploymentConfig"] == {
-        "BlueGreenUpdatePolicy": {"TrafficRoutingConfiguration": {"Type": "CANARY", "WaitIntervalInSeconds": 120, "CanarySize": {"Type": "CAPACITY_PERCENT", "Value": 50}},
+        "BlueGreenUpdatePolicy": {"TrafficRoutingConfiguration": {"Type": "ALL_AT_ONCE", "WaitIntervalInSeconds": 120},      # one instance: no canary
                                   "TerminationWaitInSeconds": 120, "MaximumExecutionTimeoutInSeconds": 1800},
         "AutoRollbackConfiguration": {"Alarms": [{"AlarmName": f"finrisk-{env}-endpoint-5xx"}, {"AlarmName": f"finrisk-{env}-endpoint-latency"}]}}
     assert len(world.sm.called("create_endpoint")) == 1                                    # only the first deploy created it
-    assert "UPDATE with blue/green" in out
+    assert ("UPDATE with blue/green ALL_AT_ONCE (1 instance: CANARY needs 2+), bake 120 s, auto-rollback on "
+            f"finrisk-{env}-endpoint-5xx and finrisk-{env}-endpoint-latency") in out
 
 
 @pytest.mark.parametrize("env", ["dev", "sit"])
@@ -387,3 +388,76 @@ def test_teardown_only_touches_its_own_environment(world):
     promote(world, "sit", 2, app=FakeApp([ready(2)]))
     world.run("teardown", "--env", "dev", "--confirm", "dev")
     assert "finrisk-sit-fraud" in world.sm.endpoints and all("-sit-" in n for n in world.sm.configs)
+
+
+# ---------------------------------------------------------------- how traffic moves: by the variant's instance count
+
+
+import copy
+
+import yaml
+from pathlib import Path
+
+CFG = yaml.safe_load((Path(__file__).resolve().parents[1] / "config" / "train.yaml").read_text())["endpoints"]
+
+
+def with_instances(count):
+    cfg = copy.deepcopy(CFG)
+    cfg["realtime"]["instance_count"] = count
+    return cfg
+
+
+def test_one_instance_means_all_at_once_with_a_bake_and_no_canary_size():
+    config = deploy.deployment_config("prod", with_instances(1))
+    routing = config["BlueGreenUpdatePolicy"]["TrafficRoutingConfiguration"]
+    assert routing == {"Type": "ALL_AT_ONCE", "WaitIntervalInSeconds": 120} and "CanarySize" not in routing
+    assert config["BlueGreenUpdatePolicy"]["TerminationWaitInSeconds"] == 120 and config["BlueGreenUpdatePolicy"]["MaximumExecutionTimeoutInSeconds"] == 1800
+    assert config["AutoRollbackConfiguration"]["Alarms"] == [{"AlarmName": "finrisk-prod-endpoint-5xx"}, {"AlarmName": "finrisk-prod-endpoint-latency"}]
+
+
+def test_two_or_more_instances_keep_the_canary():
+    for count in (2, 3):
+        routing = deploy.deployment_config("pre-prod", with_instances(count))["BlueGreenUpdatePolicy"]["TrafficRoutingConfiguration"]
+        assert routing == {"Type": "CANARY", "WaitIntervalInSeconds": 120, "CanarySize": {"Type": "CAPACITY_PERCENT", "Value": 50}}
+
+
+def test_the_bake_comes_from_the_config_and_the_sentence_says_which_strategy_and_why():
+    cfg = with_instances(1)
+    cfg["blue_green"]["bake_seconds"] = 300
+    routing, why = deploy.routing_strategy(cfg)
+    assert routing["WaitIntervalInSeconds"] == 300 and why == "blue/green ALL_AT_ONCE (1 instance: CANARY needs 2+), bake 300 s"
+    assert deploy.routing_strategy(with_instances(2))[1] == "blue/green CANARY (2 instances): 50 % for 120 s, then the rest"
+    assert CFG["blue_green"]["bake_seconds"] == 120
+
+
+def test_dev_and_sit_have_no_deployment_config_whatever_the_count():
+    assert deploy.deployment_config("dev", with_instances(2)) is None and deploy.deployment_config("sit", with_instances(1)) is None
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_both_deployment_configs_are_valid_update_endpoint_requests(count):
+    from fakes import check_shape
+
+    for env in ("pre-prod", "prod"):
+        check_shape("sagemaker", "UpdateEndpoint", {"EndpointName": f"finrisk-{env}-fraud", "EndpointConfigName": "finrisk-x-v1-20261016030000",
+                                                    "DeploymentConfig": deploy.deployment_config(env, with_instances(count))})
+
+
+def test_a_two_instance_deploy_uses_the_canary_end_to_end(world, monkeypatch):
+    import mlops
+
+    original = mlops.load_train_config
+
+    def two(path):
+        cfg = original(path)
+        cfg["endpoints"]["realtime"]["instance_count"] = 2
+        return cfg
+
+    monkeypatch.setattr(mlops, "load_train_config", two)
+    for v in (1, 2):
+        add(world, version=v, status="Approved")
+        code, out, err = promote(world, "prod", v, app=FakeApp([ready(v)]))
+        assert code == 0, err
+    routing = world.sm.called("update_endpoint")[0]["DeploymentConfig"]["BlueGreenUpdatePolicy"]["TrafficRoutingConfiguration"]
+    assert routing["Type"] == "CANARY" and "blue/green CANARY (2 instances)" in out
+    assert world.sm.called("create_endpoint_config")[0]["ProductionVariants"][0]["InitialInstanceCount"] == 2
