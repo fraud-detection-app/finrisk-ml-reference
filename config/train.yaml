@@ -68,7 +68,9 @@ registry:
 endpoints:
   name: "finrisk-{env}-fraud"
   serverless:
-    memory_mb: 4096
+    # 3072 MB: a NEW account's quota 'Memory size in MB per serverless endpoint' is 3072 (the service maximum is 6144);
+    # 4096 was refused on the first live deploy (20 Oct 2026). The serving process needs ~320 MiB after scoring.
+    memory_mb: 3072
     max_concurrency: 5
   realtime:
     model_instance_type: ml.t2.medium
