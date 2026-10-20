@@ -89,3 +89,10 @@ def test_the_package_import_is_light():
             "import finrisk_jobs, finrisk_jobs.contract, finrisk_jobs.gate, finrisk_jobs.featurestore; print('ok')")
     done = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True)
     assert done.stdout.strip() == "ok", done.stderr
+
+
+def test_serve_and_train_are_programs_on_path_and_output_is_unbuffered():
+    # serverless endpoints may start `serve` as a program instead of passing it to the ENTRYPOINT (live finding, 20 Oct 2026)
+    assert "/usr/local/bin/serve" in DOCKERFILE and "/usr/local/bin/train" in DOCKERFILE
+    assert "exec python -m finrisk_jobs serve" in DOCKERFILE and "exec python -m finrisk_jobs train" in DOCKERFILE
+    assert "PYTHONUNBUFFERED=1" in DOCKERFILE and "o+rX" in DOCKERFILE
