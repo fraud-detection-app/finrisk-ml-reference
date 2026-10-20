@@ -1,6 +1,6 @@
 """Deploying a model version to an environment's SageMaker endpoint, and taking it away again.
 
-    dev, sit          SERVERLESS endpoint (4096 MB, scales to zero, no Data Capture: serverless does not support it).
+    dev, sit          SERVERLESS endpoint (3072 MB = a new account's limit, scales to zero, no Data Capture: serverless does not support it).
                       Replaced in place (UpdateEndpoint).
     pre-prod, prod    REAL-TIME endpoint (ml.t2.medium x1) with Data Capture (100 %, input and output, JSON) and a BLUE/GREEN
                       update: a new fleet comes up next to the old one, 50 % of traffic goes to it for 120 s (the canary),

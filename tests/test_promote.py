@@ -85,7 +85,7 @@ def test_dev_first_deploy_creates_a_serverless_endpoint(world):
     (model,), (config,), (endpoint,) = (world.sm.called(n) for n in ("create_model", "create_endpoint_config", "create_endpoint"))
     assert re.fullmatch(r"finrisk-dev-fraud-v1-\d{14}", model["ModelName"]) and config["EndpointConfigName"] == model["ModelName"]
     assert endpoint["EndpointName"] == "finrisk-dev-fraud" and endpoint["EndpointConfigName"] == config["EndpointConfigName"]
-    assert config["ProductionVariants"] == [{"VariantName": "AllTraffic", "ModelName": model["ModelName"], "ServerlessConfig": {"MemorySizeInMB": 4096, "MaxConcurrency": 5}}]
+    assert config["ProductionVariants"] == [{"VariantName": "AllTraffic", "ModelName": model["ModelName"], "ServerlessConfig": {"MemorySizeInMB": 3072, "MaxConcurrency": 5}}]
     assert "DataCaptureConfig" not in config                                                # serverless does not support capture
     assert not world.sm.called("update_endpoint")
     container = model["PrimaryContainer"]

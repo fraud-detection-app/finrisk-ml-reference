@@ -104,7 +104,7 @@ def test_train_config_has_the_spec_ranges_and_gate():
     assert (cfg["gate"]["floor"], cfg["gate"]["tolerance"], cfg["gate"]["champion_env"]) == (0.70, 0.02, "prod")
     assert (cfg["splits"]["test_days"], cfg["splits"]["validation_days"], cfg["splits"]["baseline_rows"]) == (2, 2, 200000)
     e = cfg["endpoints"]
-    assert e["serverless"] == {"memory_mb": 4096, "max_concurrency": 5} and e["realtime"]["model_instance_type"] == "ml.t2.medium"
+    assert e["serverless"] == {"memory_mb": 3072, "max_concurrency": 5} and e["realtime"]["model_instance_type"] == "ml.t2.medium"
     assert (e["blue_green"]["canary_percent"], e["blue_green"]["canary_wait_seconds"], e["blue_green"]["termination_wait_seconds"]) == (50, 120, 120)
     assert e["keep_configs"] == 2
 
