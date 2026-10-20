@@ -159,11 +159,16 @@ def global_shap(model, sample, background, top: int = 10) -> dict[str, Any]:
 
 # ---------------------------------------------------------------------------- the job
 
-def gate_message(pr_auc: float, gate: dict, champion: dict | None) -> str:
-    """The text of the Fail step when the gate says no (<= 256 characters is plenty)."""
-    text = f"GATE FAILED: candidate pr_auc {pr_auc:.4f} < floor {gate['floor']:g}"
+def fail_message(pr_auc: float, gate: dict, champion: dict | None) -> str:
+    """The message the Fail step WOULD show if the gate said no. It is written into register_info.json whether or not the gate passed,
+    so it states the rule and the candidate's number without claiming a verdict: 'GATE FAILED: candidate pr_auc X; needs >= floor 0.70
+    and >= champion floor Y (champion v3 0.8800 - 0.02)'. (Only the Fail step shows it, and only when the Condition step said no.)"""
+    text = f"GATE FAILED: candidate pr_auc {pr_auc:.4f}; needs >= floor {gate['floor']:.2f}"
     if champion:
-        text += f" or < champion v{champion['version']} ({champion['pr_auc']:.4f}) - {gate['tolerance']:g}"
+        text += (f" and >= champion floor {gate['champion_floor']:.4f} "
+                 f"(champion v{champion['version']} {champion['pr_auc']:.4f} - {gate['tolerance']:g})")
+    else:
+        text += " (no champion yet)"
     return text
 
 
@@ -258,7 +263,7 @@ def run(argv: list[str] | None = None) -> int:
         test_window=window, mlflow_run_id=tracker.run_id, execution_arn=a.execution_arn)
     content = card_content(card)
     info = {
-        "gate_message": gate_message(candidate["pr_auc"], gate, champion),
+        "fail_message": fail_message(candidate["pr_auc"], gate, champion),
         "model_card_content": content, "training_job": a.candidate_job, "train_image_digest": digest_of(a.train_image),
         "cutoff": report["cutoff"], "dataset_uri": report["dataset_uri"], "baseline_uri": report["baseline_uri"],
         "pipeline_execution_arn": a.execution_arn or "local", "ml_git_sha": a.git_sha, "trigger_reason": a.trigger_reason,
