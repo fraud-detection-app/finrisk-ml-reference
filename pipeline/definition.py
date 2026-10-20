@@ -29,7 +29,7 @@ VERSION = "2020-12-01"
 ENTRYPOINT = ["python", "-m", "finrisk_jobs"]
 IN = "/opt/ml/processing/input"
 OUT = "/opt/ml/processing/output"
-TRIGGER_REASONS = ("manual", "push", "schedule", "drift")
+TRIGGER_REASONS = ("manual", "push", "schedule", "drift", "backfill")
 
 
 # ---------------------------------------------------------------------------- the reference language

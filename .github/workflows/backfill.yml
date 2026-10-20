@@ -1,4 +1,5 @@
-# Load the FULL PaySim data into AWS, once per account. Manual. The instructor runs it the day before class.
+# Load the FULL PaySim data into AWS, once per account (again after a full teardown). Manual. In class: start it right after
+# lab 8's pin PR has merged and its train run is green (it needs the training image); it runs during the knowledge block.
 #
 #   raw      download (sha256 checked) -> s3://<ml>/raw/paysim/v1/
 #   history  days 1-17 -> the Feature Store `finrisk-transactions` (BatchWriteRecord, offline store) -- about USD 8.5 once
