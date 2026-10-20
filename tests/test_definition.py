@@ -131,7 +131,7 @@ def test_register_step_matches_the_spec(train):
 
 def test_the_fail_step_message_comes_from_the_evaluate_step(train):
     step = by_name(train)["GateFailed"]
-    assert step["Arguments"]["ErrorMessage"]["Std:JsonGet"]["Path"] == "gate_message"
+    assert step["Arguments"]["ErrorMessage"]["Std:JsonGet"]["Path"] == "fail_message"
 
 
 def test_monitor_pipeline(monitor):
@@ -187,7 +187,7 @@ def test_every_reference_resolves(which, train, monitor):
 def test_json_gets_read_paths_that_the_evaluate_job_really_writes(train):
     """The Path of every JsonGet must exist in what finrisk_jobs/evaluate.py writes (names are the contract between the two)."""
     written = {"evaluation.json": {"candidate.pr_auc", "gate.champion_floor", "champion.version"},
-               "register_info.json": {"gate_message", "model_card_content", "training_job", "train_image_digest", "cutoff", "dataset_uri", "baseline_uri",
+               "register_info.json": {"fail_message", "model_card_content", "training_job", "train_image_digest", "cutoff", "dataset_uri", "baseline_uri",
                                       "pipeline_execution_arn", "ml_git_sha", "trigger_reason", "mlflow_run_id", "champion_version", "pr_auc", "champion_pr_auc"}}
     files = {f["PropertyFileName"]: f["FilePath"] for s in d.walk_steps(train) for f in s.get("PropertyFiles", [])}
     for step in d.walk_steps(train):

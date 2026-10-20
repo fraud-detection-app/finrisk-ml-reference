@@ -296,6 +296,8 @@ FINRISK_APP_SRC=../finrisk-app/src python -m pytest     # most tests need the ap
 ```
 
 The tests need `boto3 >= 1.43.37` (the Feature Store `BatchWriteRecord`). Every AWS request the code builds is validated
-against botocore's input shape by the fakes in `tests/fakes.py`. Optional extras: `mlflow`/`evidently` (the versions in
+against botocore's input shape by the fakes in `tests/fakes.py`. The Model Card is validated against AWS's own schema (`tests/fixtures/model_card_cfn_schema.json`, the CloudFormation schema of
+`AWS::SageMaker::ModelCard`; needs `jsonschema`, a dev-only dependency): `CreateModelPackage` refuses an invalid card at the very end of a run.
+Optional extras: `mlflow`/`evidently` (the versions in
 `train/requirements-image.txt`; the matching tests skip or fall back without them) and the SageMaker SDK v3 (`sagemaker`,
 `sagemaker-mlops`; set `FINRISK_SDK_PYTHON` to an interpreter that has it) for the pipeline-structure parity test.

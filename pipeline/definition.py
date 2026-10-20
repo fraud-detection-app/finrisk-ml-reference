@@ -258,9 +258,10 @@ def register_step(s: Settings) -> dict:
 
 def gate_failed_step() -> dict:
     """The Fail step's message is built by the Evaluate job (it knows if there is a champion; a JsonGet on a null champion
-    would fail the failure message itself): 'GATE FAILED: candidate pr_auc X < floor 0.7 or < champion v3 (Y) - 0.02'."""
+    would fail the failure message itself): 'GATE FAILED: candidate pr_auc X; needs >= floor 0.70 and >= champion floor Y (...)'. It is written whether or
+    not the gate passed (the key is fail_message), and only the Fail step ever shows it."""
     return {"Name": "GateFailed", "Type": "Fail",
-            "Arguments": {"ErrorMessage": json_get("Evaluate", "RegisterInfo", "gate_message")}}
+            "Arguments": {"ErrorMessage": json_get("Evaluate", "RegisterInfo", "fail_message")}}
 
 
 def gate_step(s: Settings) -> dict:

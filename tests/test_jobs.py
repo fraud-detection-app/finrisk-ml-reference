@@ -311,7 +311,7 @@ def test_register_info_holds_registry_sized_strings_and_a_card_that_is_json(buil
     base, out = make_inputs(built, packages, tmp_path), tmp_path / "evaluation"
     evaluate.run(evaluate_args(base, out))
     info = json.loads((out / "register_info.json").read_text())
-    expected_keys = {"gate_message", "model_card_content", "training_job", "train_image_digest", "cutoff", "dataset_uri", "baseline_uri", "pipeline_execution_arn",
+    expected_keys = {"fail_message", "model_card_content", "training_job", "train_image_digest", "cutoff", "dataset_uri", "baseline_uri", "pipeline_execution_arn",
                      "ml_git_sha", "trigger_reason", "mlflow_run_id", "champion_version", "pr_auc", "champion_pr_auc"}
     assert set(info) == expected_keys
     assert all(isinstance(v, str) and len(v) <= 256 for k, v in info.items() if k != "model_card_content")
@@ -325,10 +325,12 @@ def test_register_info_holds_registry_sized_strings_and_a_card_that_is_json(buil
     assert "educational" in json.dumps(card).lower() and card["intended_uses"]["risk_rating"] in ("High", "Medium", "Low", "Unknown")
 
 
-def test_gate_message_matches_the_spec_wording():
+def test_fail_message_states_the_rule_without_claiming_a_verdict():
     gate = {"floor": 0.7, "tolerance": 0.02, "champion_floor": 0.0}
-    assert evaluate.gate_message(0.6123, gate, None) == "GATE FAILED: candidate pr_auc 0.6123 < floor 0.7"
-    assert evaluate.gate_message(0.6123, gate, {"version": 3, "pr_auc": 0.88}) == "GATE FAILED: candidate pr_auc 0.6123 < floor 0.7 or < champion v3 (0.8800) - 0.02"
+    assert evaluate.fail_message(0.9541, gate, None) == "GATE FAILED: candidate pr_auc 0.9541; needs >= floor 0.70 (no champion yet)"
+    gate = {"floor": 0.7, "tolerance": 0.02, "champion_floor": 0.86}
+    assert evaluate.fail_message(0.6123, gate, {"version": 3, "pr_auc": 0.88}) == \
+        "GATE FAILED: candidate pr_auc 0.6123; needs >= floor 0.70 and >= champion floor 0.8600 (champion v3 0.8800 - 0.02)"
 
 
 def test_evaluate_logs_one_mlflow_run_and_links_it_in_the_register_info(built, packages, tmp_path, monkeypatch):
@@ -350,7 +352,7 @@ def test_a_candidate_that_fails_the_gate_is_still_a_normal_exit(built, packages,
     assert evaluate.run(evaluate_args(base, out, gate_floor=0.99)) == 0              # the Condition step decides, not this job
     ev = json.loads((out / "evaluation.json").read_text())
     assert ev["gate"]["floor"] == 0.99 and ev["candidate"]["pr_auc"] < 0.99
-    assert "GATE FAILED" in json.loads((out / "register_info.json").read_text())["gate_message"]
+    assert "GATE FAILED" in json.loads((out / "register_info.json").read_text())["fail_message"]
 
 
 def test_an_unreadable_champion_pointer_stops_the_job_instead_of_guessing(built, packages, tmp_path):
