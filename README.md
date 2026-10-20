@@ -149,7 +149,7 @@ v2, that is the lesson, not a bug. Re-run with `ModelType=baseline` (a logistic 
 | env | endpoint | data capture | update |
 | --- | --- | --- | --- |
 | dev, sit | **serverless** 3072 MB (a new account's per-endpoint limit), concurrency 5 | no (serverless cannot) | replaced in place |
-| pre-prod, prod | **real-time** `ml.t2.medium` x1 | 100 %, input and output, JSON -> `s3://<ml>/capture/<env>/` | **blue/green**: canary 50 % for 120 s, then all, old fleet kept 120 s; **automatic rollback** if `finrisk-<env>-endpoint-5xx` or `-latency` goes off |
+| pre-prod, prod | **real-time** `ml.t2.medium` x1 | 100 %, input and output, JSON -> `s3://<ml>/capture/<env>/` | **blue/green**, `ALL_AT_ONCE` with a 120 s **bake** while we run one instance (AWS refuses a `CANARY` on a single instance; with 2+ instances the config switches to canary 50 % for 120 s); old fleet kept 120 s; **automatic rollback** if `finrisk-<env>-endpoint-5xx` or `-latency` goes off during the bake |
 
 `promote-model.yml` (`dev -> sit -> pre-prod -> prod`, reviewers on the last two) runs, per environment:
 

@@ -13,3 +13,8 @@ evidently_max_rows: 50000                # rows per side given to Evidently (its
 cloudwatch:
   namespace: FinRisk/Model
   dimension: Env
+# The alarm names (finrisk-infra envs/, prod only). `mlops.py monitor` asks CloudWatch for these EXACT names: DescribeAlarms by
+# prefix is evaluated by IAM on alarm:* and the role finrisk-ml-train (least privilege) is refused.
+alarms:
+  name_template: "finrisk-{env}-model-{kind}"
+  kinds: [drift, prior-shift, quality]

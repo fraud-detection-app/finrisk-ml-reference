@@ -76,7 +76,14 @@ endpoints:
     model_instance_type: ml.t2.medium
     instance_count: 1
     capture_sampling_percent: 100
-  blue_green:                            # pre-prod and prod only
+  blue_green:                            # pre-prod and prod only. HOW traffic moves depends on realtime.instance_count:
+    # AWS refuses a canary on one instance: "Cannot create/update endpoint with single instance of variant AllTraffic, when using
+    # CANARY traffic shifting type in the specified DeploymentConfig. Please increase the instance count and retry the request, or switch
+    # to ALL-AT-ONCE traffic shifting." So:
+    #   instance_count == 1  ->  ALL_AT_ONCE: all traffic goes to the new fleet, then SageMaker watches the rollback alarms for
+    #                            `bake_seconds` before it terminates the old fleet (a failed alarm = automatic rollback)
+    #   instance_count >= 2  ->  CANARY: `canary_percent` of the capacity first, `canary_wait_seconds`, then the rest
+    bake_seconds: 120
     canary_percent: 50
     canary_wait_seconds: 120
     termination_wait_seconds: 120
