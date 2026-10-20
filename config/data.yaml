@@ -1,0 +1,38 @@
+# The dataset and the simulated calendar. See finrisk_jobs/backfill.py for how it is used.
+#
+# The FULL PaySim file, not the 5 000-row demo sample. The sha256 is checked before anything is uploaded
+# or used: a different file (a re-upload, a truncated download) stops the backfill.
+dataset:
+  url: https://huggingface.co/datasets/kohdified/synthetic-financial-data/resolve/main/paysim.csv
+  sha256: 16910f90577b0d981bf8ff289714510bb89bc71bff7d3f220f024e287e4eea6b
+  bytes: 493534783
+  rows: 6362620
+  raw_prefix: raw/paysim/v1
+
+# PaySim has 743 hourly steps. We lay them on a calendar: step 1 = this instant, one step = one hour.
+# Day d = (step - 1) // 24 + 1.  Days 1-30 = 1-30 Sep 2026.
+calendar:
+  start: "2026-09-01T00:00:00Z"
+  exclude_days: [31]                     # day 31 has 272 rows and EVERY one is fraud: an artefact, left out everywhere
+
+# History = what the model may learn from (the Feature Store gets these days).
+# Production = what arrives "live" later (replayed through the app by replay.yml, days 18-30).
+history_days: "1-17"
+production_days: "18-30"
+label_delay_days: 2                      # an analyst confirms a fraud 2 days after the transaction (label_time)
+
+# The Feature Store write (BatchWriteRecord, offline store only).
+backfill:
+  feature_group: finrisk-transactions
+  threads: 32
+  batch_size: 25                         # BatchWriteRecord takes at most 25 records per call
+  measure_records: 100000                # write this many first, time them, and extrapolate (measurement-first rule)
+  max_minutes: 60                        # projected write time above this: stop and split by day instead
+  duckdb_threads: 4
+  duckdb_memory_limit: 10GB
+  replay_prefix: replay/v1
+  labels_prefix: labels
+  # The offline store becomes queryable in Athena some minutes AFTER the writes (up to ~15). The job waits for it before it
+  # writes its report (the report is what tells the pipelines that the data is ready).
+  visibility_poll_seconds: 60
+  visibility_minutes: 30

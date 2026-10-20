@@ -1,0 +1,4 @@
+# What the PIPELINE needs (the runner runs pipeline/mlops.py): AWS calls and the config files.
+# No pandas, no scikit-learn: the jobs run inside the image (finrisk_jobs/), which is built FROM the app image.
+boto3>=1.43.37   # 1.43.37 is the first release that knows the Feature Store's BatchWriteRecord (1.43.36 does not)
+pyyaml>=6.0

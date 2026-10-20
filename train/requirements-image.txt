@@ -1,0 +1,13 @@
+# What the finrisk-ml image adds on top of the app image. Exact versions on purpose: a pipeline whose libraries move
+# under it cannot be compared with last week's run. Chosen 20 Oct 2026 with `pip install --dry-run --python-version 3.12
+# --only-binary=:all:` (the app image is python:3.12-slim): every one has a wheel for linux x86_64 on Python 3.12.
+#
+#   mlflow-skinny     the tracking CLIENT only (runs of training, evaluation and monitoring go to the serverless MLflow App,
+#                     which is the server). NOT the full `mlflow` package: mlflow 3.17.1 pins pyarrow<26 and the app image has
+#                     pyarrow 26.0.0, so the full package cannot install under the constraints (found by a local build,
+#                     20 Oct 2026). mlflow-skinny provides the same `import mlflow` logging API without the server's pins.
+#   sagemaker-mlflow  the plugin that signs MLflow requests with the job's role and understands the app ARN as a tracking URI
+#   evidently         the data-drift report (DataDriftPreset) of the monitor job; without it the monitor writes its own HTML
+mlflow-skinny==3.17.1
+sagemaker-mlflow==0.5.0
+evidently==0.7.23

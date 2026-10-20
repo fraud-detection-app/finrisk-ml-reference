@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Nothing the pipeline downloads or trains belongs in git: it lives in S3 and the Model Registry.
+*.pkl
+*.joblib
+*.tar.gz
+*.parquet
+model/
+output/
+
+# Secrets never go here. (The workflows get everything from GitHub Environments and OIDC.)
+.env
+.env.*
+!.env.example

@@ -1,0 +1,61 @@
+# CI for the ML repo: every pull request is tested BEFORE it is merged. No AWS, no credentials, no cost.
+#
+#   test   pytest. The pipeline tests use a fake AWS (sagemaker, runtime, feature store, athena, s3, ssm, cloudwatch); the job
+#          tests run the REAL training, evaluation and monitor code on small parquet files. That code uses the app's package
+#          (financial_risk), so this job also checks out finrisk-app (public).
+#
+# This job's name, `test`, is the required check in the ruleset on main (scripts/github_bootstrap.sh in
+# finrisk-infra). Renaming it blocks every merge until the ruleset is changed too.
+name: ml-ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read # the least a job needs: read the code. Nothing here writes to the repository.
+
+# A newer push to the same pull request makes the older run pointless, so cancel it.
+concurrency:
+  group: ml-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+# Every job runs on ubuntu-24.04, the image this pipeline was rehearsed on. `ubuntu-latest` moves to Ubuntu 26 on
+# 19 Oct 2026; pin the runner like you pin actions, and move to a new image on purpose, in a pull request.
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      # The training code (financial_risk.models.training) belongs to the app. The end-to-end test points at it.
+      - uses: actions/checkout@v7
+        with:
+          repository: fraud-detection-app/finrisk-app
+          path: finrisk-app
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12" # the same Python as the app image, so CI tests what ships
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install the test libraries
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run the tests
+        env:
+          FINRISK_APP_SRC: ${{ github.workspace }}/finrisk-app/src
+          LLM_PROVIDER: none
+        run: python -m pytest

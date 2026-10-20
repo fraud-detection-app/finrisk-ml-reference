@@ -1,0 +1,84 @@
+# Everything you may want to change about a training run, in one reviewed file.
+# Changing it in a pull request and merging it starts a new run of the pipeline (train.yml watches config/**).
+#
+# The pipeline `finrisk-train` (pipeline/definition.py) reads this file when it is (re)written to SageMaker:
+# the numbers below become the Parameter defaults, the Tuning step's ranges and the instance types.
+
+# What the Tuning step runs. `model_type` is a pipeline Parameter (ModelType) with this default:
+#   optimized = XGBoost (tuned)      baseline = logistic regression (a worse model: watch the gate say no)
+hyperparameters:
+  model_type: optimized
+
+# Hyperparameter search (SageMaker Automatic Model Tuning, Bayesian). The objective is the PR-AUC on the
+# VALIDATION days; the test days are only used afterwards, by the Evaluate step.
+tuning:
+  strategy: Bayesian
+  objective: validation:pr_auc           # the metric name the training script prints (name=value)
+  max_jobs: 8                            # Parameter MaxTuningJobs
+  parallel_jobs: 4                       # Parameter ParallelTuningJobs
+  max_runtime_seconds: 1800              # per training job: a stuck trial cannot bill for hours
+  ranges:
+    max_depth:         {type: int,   min: 3,    max: 8,   scaling: Linear}
+    learning_rate:     {type: float, min: 0.02, max: 0.3, scaling: Logarithmic}
+    n_estimators:      {type: int,   min: 100,  max: 500, scaling: Linear}
+    subsample:         {type: float, min: 0.6,  max: 1.0, scaling: Linear}
+    colsample_bytree:  {type: float, min: 0.6,  max: 1.0, scaling: Linear}
+    min_child_weight:  {type: int,   min: 1,    max: 10,  scaling: Linear}
+
+# The computers SageMaker rents. Billed per second, only while a step runs.
+instance:
+  training_type: ml.m5.xlarge
+  processing_type: ml.m5.xlarge
+  count: 1
+  volume_gb: 50
+  processing_max_runtime_seconds: 3600
+
+# The time split of the point-in-time dataset (build-dataset). Splits are by DAY of event_time, never random:
+# the model is always tested on days it has not seen, later than everything it trained on.
+splits:
+  test_days: 2                           # the last 2 labelled days
+  validation_days: 2                     # the 2 days before those
+  baseline_rows: 200000                  # the stratified sample of train that the monitor compares live traffic with
+
+# The offline store is filled in the background (a record is queryable in Athena some minutes after it was written). build-dataset
+# therefore COUNTS the labelled rows that have no feature row yet and waits for that to reach (almost) zero, instead of silently
+# training on a partial store. After a replay (drift retrain) the replay's features may be a few minutes behind its labels.
+completeness:
+  max_missing_share: 0.001               # tolerated: labelled rows without features / labelled rows (0.1 %); 0 = none at all
+  wait_minutes: 30
+  poll_seconds: 60
+
+# The GATE: the candidate must pass both rules (Condition step in the pipeline; numbers are Parameters).
+#   1. floor      PR-AUC on the test days >= floor
+#   2. champion   PR-AUC >= (champion PR-AUC on the SAME test days) - tolerance. The champion is the model in
+#                 /finrisk/<champion_env>/model, or none (then only the floor applies).
+gate:
+  metric: pr_auc
+  floor: 0.70                            # Parameter GateFloor
+  tolerance: 0.02                        # Parameter GateTolerance
+  champion_env: prod
+
+# The model registry
+registry:
+  group: finrisk-fraud-model
+  realtime_instance_types: [ml.t2.medium, ml.m5.large]
+
+# Serving: what `promote` creates. dev and sit are serverless (scale to zero, no data capture);
+# pre-prod and prod are real-time (always on) with Data Capture and a blue/green rollout.
+endpoints:
+  name: "finrisk-{env}-fraud"
+  serverless:
+    memory_mb: 4096
+    max_concurrency: 5
+  realtime:
+    model_instance_type: ml.t2.medium
+    instance_count: 1
+    capture_sampling_percent: 100
+  blue_green:                            # pre-prod and prod only
+    canary_percent: 50
+    canary_wait_seconds: 120
+    termination_wait_seconds: 120
+    max_execution_seconds: 1800
+  keep_configs: 2                        # newest endpoint configs/models kept per environment (the rollback target)
+  wait_minutes: 25                       # endpoint InService budget
+  ready_wait_minutes: 10                 # the app's /ready must report the new version within this

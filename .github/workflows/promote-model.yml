@@ -1,0 +1,213 @@
+# Move ONE registered model version through the four environments: dev -> sit -> pre-prod -> prod.
+#
+# Each job DEPLOYS the version to that environment's SageMaker endpoint (finrisk-<env>-fraud):
+#
+#   CreateModel -> CreateEndpointConfig -> CreateEndpoint (first time) | UpdateEndpoint -> wait InService
+#   -> smoke test (3 fixed rows: HTTP 200 and the version we just deployed) -> write the pointer /finrisk/<env>/model
+#   -> wait until the RUNNING app's /ready says source=endpoint and model.version = this version -> delete older configs
+#   (the two newest stay: the rollback target)
+#
+#   dev, sit          serverless endpoint (scales to zero, replaced in place). Accept any version that is not Rejected.
+#   pre-prod, prod    real-time endpoint with Data Capture and a BLUE/GREEN update: canary 50 % for 120 s, then all, with
+#                     automatic rollback if the alarms finrisk-<env>-endpoint-5xx / -latency go off. Approved versions only.
+#                     Each has a required reviewer too.
+#
+# The app is never restarted and never rebuilt: it re-reads its pointer on a timer and starts calling the new endpoint config.
+#
+# Roll back = run this again with the previous version number. Same jobs, same approvals.
+#
+# What this workflow needs: ONE secret NAME, AWS_ROLE_ARN, set in each Environment with that environment's role
+# (each role may only touch finrisk-<env>-fraud-* and /finrisk/<env>/*). A job with `environment:` reads its own Environment's secret.
+# ------------------------------------------------------------------------------------------------------
+#   name                  kind      where                   what
+#   AWS_ROLE_ARN          secret    Environment `dev`       role finrisk-ml-promote-dev
+#   AWS_ROLE_ARN          secret    Environment `sit`       role finrisk-ml-promote-sit
+#   AWS_ROLE_ARN          secret    Environment `pre-prod`  role finrisk-ml-promote-pre-prod   (reviewer)
+#   AWS_ROLE_ARN          secret    Environment `prod`      role finrisk-ml-promote-prod       (reviewer)
+#   AWS_REGION            variable  repository              ap-southeast-2
+name: promote-model
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Model version number to promote (see list in the approve-model run)"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote-model # one promotion at a time: two runs would fight over the same endpoints and pointers
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+# Every job runs on ubuntu-24.04, the image this pipeline was rehearsed on. `ubuntu-latest` moves to Ubuntu 26 on
+# 19 Oct 2026; pin the runner like you pin actions, and move to a new image on purpose, in a pull request.
+jobs:
+  promote-dev:
+    name: promote to dev
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60 # endpoint InService (25 min budget) + smoke test + the /ready wait (10 min)
+    environment: dev
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      VERSION: ${{ inputs.version }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Check the version number
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+$ ]] || { echo "::error::version must be a whole number, not '$VERSION'"; exit 1; }
+
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: promote-dev-${{ github.run_id }}
+
+      # Secrets are hidden already; this also hides the NEW strings built from the account id in what AWS prints.
+      - name: Hide the account id in what AWS prints
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          echo "::add-mask::$ACCOUNT_ID"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Deploy model version ${{ inputs.version }} to dev
+        run: |
+          pip install --quiet -r requirements.txt
+          python pipeline/mlops.py promote --env dev --version "$VERSION" --summary "$GITHUB_STEP_SUMMARY"
+
+  promote-sit:
+    name: promote to sit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60 # endpoint InService (25 min budget) + smoke test + the /ready wait (10 min)
+    needs: promote-dev
+    environment: sit
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      VERSION: ${{ inputs.version }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Check the version number
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+$ ]] || { echo "::error::version must be a whole number, not '$VERSION'"; exit 1; }
+
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: promote-sit-${{ github.run_id }}
+
+      # Secrets are hidden already; this also hides the NEW strings built from the account id in what AWS prints.
+      - name: Hide the account id in what AWS prints
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          echo "::add-mask::$ACCOUNT_ID"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Deploy model version ${{ inputs.version }} to sit
+        run: |
+          pip install --quiet -r requirements.txt
+          python pipeline/mlops.py promote --env sit --version "$VERSION" --summary "$GITHUB_STEP_SUMMARY"
+
+  promote-pre-prod:
+    name: promote to pre-prod
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60 # endpoint InService (25 min budget) + smoke test + the /ready wait (10 min)
+    needs: promote-sit
+    environment: pre-prod
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      VERSION: ${{ inputs.version }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Check the version number
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+$ ]] || { echo "::error::version must be a whole number, not '$VERSION'"; exit 1; }
+
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: promote-pre-prod-${{ github.run_id }}
+
+      # Secrets are hidden already; this also hides the NEW strings built from the account id in what AWS prints.
+      - name: Hide the account id in what AWS prints
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          echo "::add-mask::$ACCOUNT_ID"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Deploy model version ${{ inputs.version }} to pre-prod
+        run: |
+          pip install --quiet -r requirements.txt
+          python pipeline/mlops.py promote --env pre-prod --version "$VERSION" --summary "$GITHUB_STEP_SUMMARY"
+
+  promote-prod:
+    name: promote to prod
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60 # endpoint InService (25 min budget) + smoke test + the /ready wait (10 min)
+    needs: promote-pre-prod
+    environment: prod
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      VERSION: ${{ inputs.version }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Check the version number
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+$ ]] || { echo "::error::version must be a whole number, not '$VERSION'"; exit 1; }
+
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: promote-prod-${{ github.run_id }}
+
+      # Secrets are hidden already; this also hides the NEW strings built from the account id in what AWS prints.
+      - name: Hide the account id in what AWS prints
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          echo "::add-mask::$ACCOUNT_ID"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Deploy model version ${{ inputs.version }} to prod
+        run: |
+          pip install --quiet -r requirements.txt
+          python pipeline/mlops.py promote --env prod --version "$VERSION" --summary "$GITHUB_STEP_SUMMARY"

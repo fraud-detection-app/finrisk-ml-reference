@@ -1,0 +1,103 @@
+# A PERSON decides whether a registered model version may reach pre-prod and prod.
+#
+# Why a separate workflow? Training (train.yml) is automatic; judging the result is not. The job below runs in
+# the `model-approval` Environment, which has a required reviewer: GitHub pauses here until that person clicks
+# "Approve and deploy". Recording the decision is then one command against the Model Registry:
+#
+#   Approved    -> pre-prod and prod may run this version (promote-model.yml checks the status every time);
+#                  the version's Model Card moves from Draft to Approved
+#   Rejected    -> no environment may run it; the Model Card is Archived
+#
+# Before you decide, read what the pipeline attached to the version: the gate table in the train run's summary, the Model
+# Card, the SHAP and bias reports (SageMaker Studio -> Models -> finrisk-fraud-model -> the version), the MLflow runs.
+# (The same thing can be done by hand in Studio.)
+#
+# What this workflow needs
+# ------------------------
+#   name                       kind      where                      what
+#   AWS_ROLE_ARN               secret    Environment `model-approval`  role finrisk-ml-approve (OIDC)
+#   AWS_REGION                 variable  repository                 ap-southeast-2
+name: approve-model
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Model version number (see the train run summary)"
+        type: string
+        required: true
+      decision:
+        description: "approve or reject"
+        type: choice
+        options: [approve, reject]
+        default: approve
+      note:
+        description: "Why? (stored with the decision)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: approve-model
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+# Every job runs on ubuntu-24.04, the image this pipeline was rehearsed on. `ubuntu-latest` moves to Ubuntu 26 on
+# 19 Oct 2026; pin the runner like you pin actions, and move to a new image on purpose, in a pull request.
+jobs:
+  decide:
+    name: ${{ inputs.decision }} version ${{ inputs.version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: model-approval # the reviewer gate
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      VERSION: ${{ inputs.version }}
+      DECISION: ${{ inputs.decision }}
+      NOTE: ${{ inputs.note }}
+    steps:
+      - name: Check the version number
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+$ ]] || { echo "::error::version must be a whole number, not '$VERSION'"; exit 1; }
+
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: approve-${{ github.run_id }}
+
+      # Secrets are hidden already; this also hides the NEW strings built from the account id in what AWS prints.
+      - name: Hide the account id in what AWS prints
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          echo "::add-mask::$ACCOUNT_ID"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Record the decision
+        run: |
+          pip install --quiet -r requirements.txt
+          ARGS=(--version "$VERSION" --decision "$DECISION" --summary "$GITHUB_STEP_SUMMARY")
+          if [ -n "$NOTE" ]; then ARGS+=(--note "$NOTE"); fi
+          python pipeline/mlops.py approve "${ARGS[@]}"
+
+      - name: The registry now
+        run: |
+          {
+            echo ""
+            echo '```'
+            python pipeline/mlops.py list
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

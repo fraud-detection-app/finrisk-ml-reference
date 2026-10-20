@@ -1,0 +1,86 @@
+# Is the model still good? Run the SageMaker Pipeline `finrisk-monitor` and read the answer.
+#
+# The monitor job (inside SageMaker) reads the endpoint's captured requests, compares every feature and the score with the
+# training sample (PSI; an Evidently report), joins the feedback labels (live PR-AUC, live fraud rate) and publishes nine
+# metrics to CloudWatch (namespace FinRisk/Model). This workflow starts it, waits, and prints the table and the state of the
+# alarms. In prod the alarms (finrisk-prod-model-drift / -prior-shift / -quality) start the `finrisk-train` pipeline by
+# themselves (EventBridge): that is the "drift -> retrain" loop. A person still has to approve the result.
+#
+# (SageMaker Model Monitor and Clarify closed to new customers on 30 Jul 2026. This is the replacement AWS describes:
+# Data Capture + your own job + CloudWatch + EventBridge.)
+#
+# What this workflow needs
+# ------------------------------------------------------------------------------------------------------
+#   name                      kind      where                   what
+#   AWS_ROLE_ARN              secret    Environment `ml`        role finrisk-ml-train
+#   AWS_REGION                variable  repository              ap-southeast-2
+name: monitor
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Environment to monitor (its endpoint needs Data Capture: pre-prod or prod)"
+        type: choice
+        options: [prod, pre-prod]
+        default: prod
+      window_hours:
+        description: "Look at the captured requests of the last N hours"
+        type: string
+        default: "24"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+# Every job runs on ubuntu-24.04, the image this pipeline was rehearsed on. `ubuntu-latest` moves to Ubuntu 26 on
+# 19 Oct 2026; pin the runner like you pin actions, and move to a new image on purpose, in a pull request.
+jobs:
+  monitor:
+    name: monitor the model
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: ml
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TARGET_ENV: ${{ inputs.env }}
+      WINDOW_HOURS: ${{ inputs.window_hours }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Check the numbers
+        run: |
+          [[ "$WINDOW_HOURS" =~ ^[0-9]+$ ]] || { echo "::error::window_hours must be a whole number"; exit 1; }
+
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: monitor-${{ github.run_id }}
+
+      # Secrets are hidden already; this also hides the NEW strings built from the account id in what AWS prints.
+      - name: Hide the account id in what AWS prints
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          echo "::add-mask::$ACCOUNT_ID"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install boto3 and pyyaml
+        run: pip install --quiet -r requirements.txt
+
+      - name: Run finrisk-monitor, print the drift table and the alarm states
+        run: python pipeline/mlops.py monitor --env "$TARGET_ENV" --window-hours "$WINDOW_HOURS" --summary "$GITHUB_STEP_SUMMARY"

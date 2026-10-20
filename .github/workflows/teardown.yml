@@ -1,0 +1,80 @@
+# Take one environment's model away: delete its SageMaker endpoint, endpoint configs and models. Part of lab 13 (the clean-up),
+# BEFORE the infra destroy. Real-time endpoints bill by the hour while they exist (about USD 0.07 per hour each).
+#
+# You must TYPE the environment name to confirm. pre-prod and prod also need their reviewer (their Environments have one).
+# The pointer /finrisk/<env>/model is reset to {"version": null}, so the app serves its baked model instead of calling an
+# endpoint that is gone. Everything else (Feature Store, MLflow, alarms, schedules) belongs to finrisk-infra's destroy.
+#
+# What this workflow needs: AWS_ROLE_ARN is read from the Environment you pick (the same four roles as promote-model.yml).
+# ------------------------------------------------------------------------------------------------------
+#   name                  kind      where                   what
+#   AWS_ROLE_ARN          secret    Environment `<env>`     role finrisk-ml-promote-<env>
+#   AWS_REGION            variable  repository              ap-southeast-2
+name: teardown
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Environment whose endpoint, configs and models are deleted"
+        type: choice
+        options: [dev, sit, pre-prod, prod]
+        required: true
+      confirm:
+        description: "Type the environment name again to confirm"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote-model # the same lock as promote-model.yml: never tear down while a promotion runs
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+# Every job runs on ubuntu-24.04, the image this pipeline was rehearsed on. `ubuntu-latest` moves to Ubuntu 26 on
+# 19 Oct 2026; pin the runner like you pin actions, and move to a new image on purpose, in a pull request.
+jobs:
+  teardown:
+    name: tear down ${{ inputs.env }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: ${{ inputs.env }}
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TARGET_ENV: ${{ inputs.env }}
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - name: Check the confirmation
+        run: |
+          [ "$CONFIRM" = "$TARGET_ENV" ] || { echo "::error::you typed '$CONFIRM' but the environment is '$TARGET_ENV'. Type the environment name exactly."; exit 1; }
+
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: teardown-${{ github.run_id }}
+
+      # Secrets are hidden already; this also hides the NEW strings built from the account id in what AWS prints.
+      - name: Hide the account id in what AWS prints
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          echo "::add-mask::$ACCOUNT_ID"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Delete the endpoint, configs and models of ${{ inputs.env }}
+        run: |
+          pip install --quiet -r requirements.txt
+          python pipeline/mlops.py teardown --env "$TARGET_ENV" --confirm "$CONFIRM" --summary "$GITHUB_STEP_SUMMARY"

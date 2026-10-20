@@ -1,0 +1,113 @@
+# Train the model with the SageMaker Pipeline `finrisk-train`: dataset -> tuning -> evaluate -> THE GATE -> register.
+#
+# This workflow does not train anything itself. It builds the image, writes the pipeline DEFINITION to SageMaker (upsert),
+# starts an execution and follows it. The pipeline runs in AWS: you can leave this page and watch it in SageMaker Studio.
+#
+#   image    build + push finrisk-train:sha-<this commit> FROM the pinned app image (skipped when that tag already exists)
+#   upsert   CreatePipeline / UpdatePipeline for finrisk-train and finrisk-monitor (pipeline/definition.py)
+#   run      StartPipelineExecution(TriggerReason = push | manual), then follow every step until the end:
+#            BuildDataset (Athena, point-in-time) -> Tune (8 trials) -> Evaluate (candidate vs champion, SHAP, bias, card)
+#            -> Gate -> Register (PendingManualApproval) or GateFailed (this job fails with exit code 3)
+#
+# NO DATA YET? The pipelines are upserted either way (that is the point of the first merge), but the run step first looks for
+# s3://<ml>/raw/paysim/v1/backfill_report.json, which the backfill writes LAST (after the data is queryable). Without it a push or
+# schedule trigger prints "no data yet: run backfill.yml first" and ends green; a manual run fails with the same words.
+# New account, in this order: pin PR (train.yml only upserts) -> backfill.yml with then_train -> the first pipeline run.
+#
+# Who else starts the same pipeline: EventBridge Scheduler (weekly, Monday 02:00 Sydney, TriggerReason=schedule), the
+# EventBridge rule that reacts to a drift alarm (TriggerReason=drift:<alarm>), and a person in Studio. There is NO
+# `schedule:` here any more: the schedule lives in AWS now.
+#
+# What this workflow needs (set once; finrisk-infra/scripts/github_bootstrap.sh does it from the Terraform outputs)
+# -----------------------------------------------------------------------------------------------------
+#   name                      kind      where                   what
+#   AWS_ROLE_ARN              secret    Environment `ml`        role finrisk-ml-train (OIDC; no AWS key anywhere)
+#   AWS_REGION                variable  repository              ap-southeast-2
+# The Environment `ml` only accepts runs from `main`. Role ARNs are secrets because they contain the account id
+# and this repo is public. One rule for all four repos: a job WITH `environment:` reads the Environment secret
+# AWS_ROLE_ARN (each Environment holds its own role). The ML bucket, the SageMaker role and the registry address are looked up at run time.
+name: train
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_type:
+        description: "config = what config/train.yaml says; baseline = logistic regression (a worse model, to watch the gate say no)"
+        type: choice
+        options: [config, optimized, baseline]
+        default: config
+      cutoff:
+        description: "auto = every label that has arrived; or an ISO time such as 2026-09-19T23:00:00Z"
+        type: string
+        default: auto
+  push:
+    branches: [main]
+    paths: ["finrisk_jobs/**", "pipeline/**", "train/**", "config/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: train # one training run at a time
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+# Every job runs on ubuntu-24.04, the image this pipeline was rehearsed on. `ubuntu-latest` moves to Ubuntu 26 on
+# 19 Oct 2026; pin the runner like you pin actions, and move to a new image on purpose, in a pull request.
+jobs:
+  train:
+    name: train, check, register
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120 # the pipeline itself is ~20-30 minutes; this is the ceiling
+    environment: ml
+    permissions:
+      id-token: write # lets the job ask GitHub for the OIDC token that AWS exchanges for the role
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      MODEL_TYPE_CHOICE: ${{ inputs.model_type }}
+      CUTOFF_CHOICE: ${{ inputs.cutoff }}
+      TRIGGER_REASON: ${{ github.event_name == 'push' && 'push' || 'manual' }}
+      ML_GIT_SHA: ${{ github.sha }}
+      PYTHONUNBUFFERED: "1" # print the pipeline's step changes as they happen
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: train-${{ github.run_id }}
+
+      # Secrets are hidden already; this also hides the NEW strings built from the account id in what AWS prints.
+      - name: Hide the account id in what AWS prints
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          echo "::add-mask::$ACCOUNT_ID"
+          echo "REGISTRY=${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install boto3 and pyyaml (all that pipeline/mlops.py needs)
+        run: pip install --quiet -r requirements.txt
+
+      # The image: the app image (pinned by digest in train/base_image.txt) + finrisk_jobs/ + mlflow, sagemaker-mlflow, evidently.
+      # Tagged with THIS repo's commit; a commit that changes nothing in train/ or finrisk_jobs/ finds its image already there.
+      - name: Training image (build + push if this commit has none yet)
+        run: bash scripts/ensure_train_image.sh
+
+      - name: 1/2 upsert the pipelines (CreatePipeline / UpdatePipeline)
+        run: python pipeline/mlops.py upsert --image "$TRAIN_IMAGE" --summary "$GITHUB_STEP_SUMMARY"
+
+      # THE GATE is inside the pipeline. Exit code 3 = the candidate is not good enough: this step fails, nothing is registered.
+      - name: 2/2 run the pipeline finrisk-train and follow it
+        run: |
+          ARGS=(--trigger-reason "$TRIGGER_REASON" --summary "$GITHUB_STEP_SUMMARY")
+          if [ "$MODEL_TYPE_CHOICE" = optimized ] || [ "$MODEL_TYPE_CHOICE" = baseline ]; then ARGS+=(--model-type "$MODEL_TYPE_CHOICE"); fi
+          if [ -n "$CUTOFF_CHOICE" ] && [ "$CUTOFF_CHOICE" != auto ]; then ARGS+=(--cutoff "$CUTOFF_CHOICE"); fi
+          python pipeline/mlops.py run "${ARGS[@]}"

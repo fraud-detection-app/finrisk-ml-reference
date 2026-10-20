@@ -1,0 +1,14 @@
+# For the tests (pytest). They need the libraries the jobs import: the same ones the app image has. The app's source
+# (financial_risk) is checked out next to this repo in CI and in the course workspace: FINRISK_APP_SRC=../finrisk-app/src.
+-r requirements-sim.txt
+pytest>=8.0.0
+
+duckdb>=1.0.0
+scikit-learn>=1.4.0
+scipy>=1.11.0
+joblib>=1.3.0
+xgboost>=2.0.0
+shap>=0.45.0
+fastapi>=0.111.0
+httpx>=0.27.0
+# Optional (tests skip without them):  mlflow-skinny==3.17.1  evidently==0.7.23  (the versions in train/requirements-image.txt)

@@ -1,0 +1,8 @@
+# The app image the finrisk-ml image (train/Dockerfile) is built FROM, pinned by digest: <repository>@sha256:<64 hex>.
+# No registry address here: the account id must not be written into a public repo. The workflow
+# puts this account's ECR registry in front of it.
+#
+# PLACEHOLDER until the first live run. To take a newer app image, copy a digest from the finrisk-app
+# repo (ECR -> finrisk-app -> the image that passed dev -> "Copy digest"), edit the line below and
+# open a pull request. Bumping this pin is always a PR: that is how a dependency update gets reviewed.
+finrisk-app@sha256:0000000000000000000000000000000000000000000000000000000000000000

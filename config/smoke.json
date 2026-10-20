@@ -1,0 +1,71 @@
+{
+  "description": "Three fixed transactions the promote step sends to a freshly deployed endpoint (the smoke test). It asks only: HTTP 200 and the response says the version we just deployed. It does NOT require the model to flag the fraud row: whether a model is good is the gate's job (PR-AUC on the test days), not a deploy check.",
+  "provenance": {
+    "dataset": "PaySim full, sha256 16910f90577b0d981bf8ff289714510bb89bc71bff7d3f220f024e287e4eea6b (config/data.yaml)",
+    "row_id": "the row's 0-based position in paysim.csv; features are the gold table finrisk-app builds (financial_risk.features.sql_features) over the whole file",
+    "chosen_by": {
+      "fraud": "row 4667: the FIRST row (lowest row_id) with is_fraud = 1, TRANSFER, amount = origin_old_balance, origin_new_balance = 0, destination_old_balance = 0, a sender's first transaction, amount between 100 000 and 200 000, day <= 17. The textbook PaySim fraud: empty the account into an empty account.",
+      "legit_payment": "row 35103: the first row with is_fraud = 0, PAYMENT, a sender's first transaction, amount 5 000 - 10 000, origin_new_balance > 0, hour_of_day 8-18, day <= 17.",
+      "legit_cash_out": "row 35258: the first row with is_fraud = 0, CASH_OUT, a sender's first transaction, amount 20 000 - 60 000, origin_new_balance > 0, hour_of_day 8-18, day <= 17."
+    },
+    "days": "all three are on day 1 (history), so no label is a surprise and none belongs to the production set"
+  },
+  "instances": [
+    {
+      "row_id": "4667",
+      "transaction_type": "TRANSFER",
+      "amount": 169941.73,
+      "log_amount": 5.230303,
+      "origin_old_balance": 169941.73,
+      "origin_new_balance": 0.0,
+      "destination_old_balance": 0.0,
+      "destination_new_balance": 0.0,
+      "origin_balance_delta": 169941.73,
+      "destination_balance_delta": 0.0,
+      "amount_to_origin_balance": 1.0,
+      "hour_of_day": 3,
+      "tx_index_for_origin": 1,
+      "customer_tx_count_so_far": 1,
+      "customer_amount_so_far": 169941.73
+    },
+    {
+      "row_id": "35103",
+      "transaction_type": "PAYMENT",
+      "amount": 5809.85,
+      "log_amount": 3.76424,
+      "origin_old_balance": 11301.0,
+      "origin_new_balance": 5491.15,
+      "destination_old_balance": 0.0,
+      "destination_new_balance": 0.0,
+      "origin_balance_delta": 5809.85,
+      "destination_balance_delta": 0.0,
+      "amount_to_origin_balance": 0.514101,
+      "hour_of_day": 8,
+      "tx_index_for_origin": 1,
+      "customer_tx_count_so_far": 1,
+      "customer_amount_so_far": 5809.85
+    },
+    {
+      "row_id": "35258",
+      "transaction_type": "CASH_OUT",
+      "amount": 38445.67,
+      "log_amount": 4.584859,
+      "origin_old_balance": 891268.0,
+      "origin_new_balance": 852822.33,
+      "destination_old_balance": 495014.38,
+      "destination_new_balance": 1304362.07,
+      "origin_balance_delta": 38445.67,
+      "destination_balance_delta": 809347.69,
+      "amount_to_origin_balance": 0.043136,
+      "hour_of_day": 8,
+      "tx_index_for_origin": 1,
+      "customer_tx_count_so_far": 1,
+      "customer_amount_so_far": 38445.67
+    }
+  ],
+  "labels": {
+    "4667": 1,
+    "35103": 0,
+    "35258": 0
+  }
+}

@@ -1,0 +1,15 @@
+# The monitor job (finrisk_jobs/monitor.py, pipeline `finrisk-monitor`) and the numbers the alarms use.
+# The alarms themselves live in Terraform (finrisk-infra envs/); keep the thresholds in step with these.
+window_hours: 24                         # Parameter WindowHours: captured requests of the last N hours
+psi_bins: 10                             # quantile bins taken from the reference sample
+thresholds:
+  psi_significant: 0.25                  # PSI >= this = "significant shift" (the industry band). Alarm: finrisk-prod-model-drift
+  psi_moderate: 0.10                     # PSI >= this = "moderate shift - monitor"
+  fraud_rate_ratio: 5                    # live fraud rate / training prevalence >= this. Alarm: finrisk-prod-model-prior-shift
+  live_pr_auc_floor: 0.70                # live PR-AUC < this (with enough labels). Alarm: finrisk-prod-model-quality
+  min_labelled_rows: 500                 # fewer labelled rows than this: the quality alarm cannot fire
+reference_rows: 200000
+evidently_max_rows: 50000                # rows per side given to Evidently (its report is slow beyond this)
+cloudwatch:
+  namespace: FinRisk/Model
+  dimension: Env

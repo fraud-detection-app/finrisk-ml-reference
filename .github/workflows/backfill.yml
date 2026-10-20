@@ -1,0 +1,102 @@
+# Load the FULL PaySim data into AWS, once per account. Manual. The instructor runs it the day before class.
+#
+#   raw      download (sha256 checked) -> s3://<ml>/raw/paysim/v1/
+#   history  days 1-17 -> the Feature Store `finrisk-transactions` (BatchWriteRecord, offline store) -- about USD 8.5 once
+#   labels   the history labels -> s3://<ml>/labels/source=history/   (label_time = event time + 2 days)
+#   replay   days 18-30 -> s3://<ml>/replay/v1/ (what replay.yml sends through the app)
+#   wait     the job then WAITS until Athena can see what it wrote (the Feature Store's offline store lags the writes by up
+#            to ~15 minutes; budget 30), and only then writes the report
+#   report   s3://<ml>/raw/paysim/v1/backfill_report.json  (its existence means: the data is complete and queryable)
+#
+# then_train (default: yes): after the job(s) succeeded, this workflow writes the pipelines (upsert) and starts the first
+# finrisk-train run (TriggerReason=backfill). It does not follow it: the run takes ~20-30 minutes; the log prints the execution ARN
+# and how to watch it. The order of a new account: pin PR -> train.yml (only upserts: no data yet) -> THIS workflow -> the first run.
+#
+# It runs as a SageMaker Processing job (ml.m5.xlarge) in the same image as training. The job MEASURES the Feature Store write
+# speed first (100 000 records) and stops if the whole history would take over an hour; then run it again with
+# instance_count 2-4, which splits the days across parallel jobs. Re-running is safe: records are written idempotently.
+#
+# What this workflow needs
+# ------------------------------------------------------------------------------------------------------
+#   name                      kind      where                   what
+#   AWS_ROLE_ARN              secret    Environment `ml`        role finrisk-ml-train
+#   AWS_REGION                variable  repository              ap-southeast-2
+name: backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "History days to write to the Feature Store (blank = config/data.yaml, 1-17). Shrinking it is a trade-off, said in the report."
+        type: string
+        default: ""
+      instance_count:
+        description: "Parallel jobs (1 normally; 2-4 when the job says the single job would be too slow)"
+        type: choice
+        options: ["1", "2", "3", "4"]
+        default: "1"
+      then_train:
+        description: "When the data is complete and visible in Athena, write the pipelines and start the first finrisk-train run"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backfill
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+# Every job runs on ubuntu-24.04, the image this pipeline was rehearsed on. `ubuntu-latest` moves to Ubuntu 26 on
+# 19 Oct 2026; pin the runner like you pin actions, and move to a new image on purpose, in a pull request.
+jobs:
+  backfill:
+    name: backfill the data
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    environment: ml
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      DAYS: ${{ inputs.days }}
+      INSTANCE_COUNT: ${{ inputs.instance_count }}
+      THEN_TRAIN: ${{ inputs.then_train }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: backfill-${{ github.run_id }}
+
+      # Secrets are hidden already; this also hides the NEW strings built from the account id in what AWS prints.
+      - name: Hide the account id in what AWS prints
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          echo "::add-mask::$ACCOUNT_ID"
+          echo "REGISTRY=${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install boto3 and pyyaml
+        run: pip install --quiet -r requirements.txt
+
+      - name: Training image (build + push if this commit has none yet)
+        run: bash scripts/ensure_train_image.sh
+
+      - name: Start the backfill job(s) and follow them
+        run: |
+          ARGS=(--image "$TRAIN_IMAGE" --instance-count "$INSTANCE_COUNT" --summary "$GITHUB_STEP_SUMMARY")
+          if [ -n "$DAYS" ]; then ARGS+=(--days "$DAYS"); fi
+          if [ "$THEN_TRAIN" = true ]; then ARGS+=(--then-train); fi
+          python pipeline/mlops.py backfill "${ARGS[@]}"

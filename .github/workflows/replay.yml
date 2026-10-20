@@ -1,0 +1,147 @@
+# The simulated outside world: customers send transactions, analysts confirm the frauds a few days later.
+#
+#   traffic    days <from> to <to> of PaySim (never seen by training) go through the REAL production path:
+#                 this job -> POST <app_url>/api/score -> the app -> the SageMaker endpoint -> Data Capture (S3)
+#              500 rows per call; it prints a line per day and records the features in the Feature Store.
+#   feedback   `label_delay` minutes later (0 in class) the true labels of those rows are written to
+#              s3://<ml>/labels/source=feedback/ with label_time = last event + 2 days. Nothing else changes.
+#
+# This is NOT part of the system: it is what makes the system busy. It runs in its own Environment, `simulation`, with its own
+# role that can read the replay files and write labels and nothing else (it cannot touch models or endpoints).
+#
+# After it: run monitor.yml. With days 18-22 the monitor should see hour_of_day drift (PSI ~0.5) and a fraud rate ~12x higher.
+#
+# What this workflow needs
+# ------------------------------------------------------------------------------------------------------
+#   name                      kind      where                       what
+#   AWS_ROLE_ARN              secret    Environment `simulation`    role finrisk-ml-feedback (OIDC)
+#   AWS_REGION                variable  repository                  ap-southeast-2
+name: replay
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_day:
+        description: "First production day to replay (18-30)"
+        type: string
+        default: "18"
+      to_day:
+        description: "Last production day to replay"
+        type: string
+        default: "22"
+      env:
+        description: "Which environment's app receives the traffic (the role finrisk-ml-feedback may only read prod's app_url)"
+        type: choice
+        options: [prod]
+        default: prod
+      batch:
+        description: "Transactions per call (1-500)"
+        type: string
+        default: "500"
+      label_delay:
+        description: "Minutes the simulated analysts wait before the labels arrive (0 in class)"
+        type: string
+        default: "0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: replay
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+# Every job runs on ubuntu-24.04, the image this pipeline was rehearsed on. `ubuntu-latest` moves to Ubuntu 26 on
+# 19 Oct 2026; pin the runner like you pin actions, and move to a new image on purpose, in a pull request.
+jobs:
+  traffic:
+    name: customers send transactions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: simulation
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      FROM_DAY: ${{ inputs.from_day }}
+      TO_DAY: ${{ inputs.to_day }}
+      TARGET_ENV: ${{ inputs.env }}
+      BATCH: ${{ inputs.batch }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Check the numbers
+        run: |
+          for v in "$FROM_DAY" "$TO_DAY" "$BATCH"; do [[ "$v" =~ ^[0-9]+$ ]] || { echo "::error::'$v' must be a whole number"; exit 1; }; done
+
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: replay-traffic-${{ github.run_id }}
+
+      # Secrets are hidden already; this also hides the NEW strings built from the account id in what AWS prints.
+      - name: Hide the account id in what AWS prints
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          echo "::add-mask::$ACCOUNT_ID"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install boto3, pyyaml, pandas and pyarrow
+        run: pip install --quiet -r requirements-sim.txt
+
+      - name: Replay days ${{ inputs.from_day }}-${{ inputs.to_day }} through the app
+        run: python pipeline/mlops.py replay --from-day "$FROM_DAY" --to-day "$TO_DAY" --env "$TARGET_ENV" --batch "$BATCH" --summary "$GITHUB_STEP_SUMMARY"
+
+  feedback:
+    name: analysts confirm the labels
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    needs: traffic
+    environment: simulation
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      FROM_DAY: ${{ inputs.from_day }}
+      TO_DAY: ${{ inputs.to_day }}
+      LABEL_DELAY: ${{ inputs.label_delay }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Check the numbers
+        run: |
+          for v in "$FROM_DAY" "$TO_DAY"; do [[ "$v" =~ ^[0-9]+$ ]] || { echo "::error::'$v' must be a whole number"; exit 1; }; done
+          [[ "$LABEL_DELAY" =~ ^[0-9]+$ ]] || { echo "::error::label_delay must be a whole number of minutes"; exit 1; }
+
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: replay-feedback-${{ github.run_id }}
+
+      # Secrets are hidden already; this also hides the NEW strings built from the account id in what AWS prints.
+      - name: Hide the account id in what AWS prints
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          echo "::add-mask::$ACCOUNT_ID"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install boto3, pyyaml, pandas and pyarrow
+        run: pip install --quiet -r requirements-sim.txt
+
+      - name: Write the true labels of days ${{ inputs.from_day }}-${{ inputs.to_day }}
+        run: python pipeline/mlops.py feedback --from-day "$FROM_DAY" --to-day "$TO_DAY" --label-delay-minutes "$LABEL_DELAY" --summary "$GITHUB_STEP_SUMMARY"
