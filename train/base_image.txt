@@ -5,4 +5,4 @@
 # PLACEHOLDER until the first live run. To take a newer app image, copy a digest from the finrisk-app
 # repo (ECR -> finrisk-app -> the image that passed dev -> "Copy digest"), edit the line below and
 # open a pull request. Bumping this pin is always a PR: that is how a dependency update gets reviewed.
-finrisk-app@sha256:0000000000000000000000000000000000000000000000000000000000000000
+finrisk-app@sha256:a3593c34c14a2b5a8b381ffd8288ace4c78f2c29033d104e8db8f304bd2cf6fb
