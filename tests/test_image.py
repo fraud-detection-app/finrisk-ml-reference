@@ -96,3 +96,11 @@ def test_serve_and_train_are_programs_on_path_and_output_is_unbuffered():
     assert "/usr/local/bin/serve" in DOCKERFILE and "/usr/local/bin/train" in DOCKERFILE
     assert "exec python -m finrisk_jobs serve" in DOCKERFILE and "exec python -m finrisk_jobs train" in DOCKERFILE
     assert "PYTHONUNBUFFERED=1" in DOCKERFILE and "o+rX" in DOCKERFILE
+
+
+def test_the_model_image_drops_the_lambda_extension_it_inherits_from_the_app_release_image():
+    # The app release image has the Lambda Web Adapter in /opt/extensions; a serverless endpoint (Lambda machinery) loads it
+    # and fails with no log (live rehearsal, 20-21 Oct 2026). It must be removed after FROM and before anything else runs.
+    assert "rm -rf /opt/extensions" in DOCKERFILE
+    assert DOCKERFILE.index("rm -rf /opt/extensions") > DOCKERFILE.index("FROM ${BASE_IMAGE}")
+    assert DOCKERFILE.index("rm -rf /opt/extensions") < DOCKERFILE.index("\nENTRYPOINT [")
